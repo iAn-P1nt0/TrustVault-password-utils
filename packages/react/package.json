@@ -1,0 +1,69 @@
+{
+  "name": "@trustvault/password-utils-react",
+  "version": "1.0.0",
+  "description": "React hooks for TrustVault password utilities",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean --external react",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "npm run test && npm run build"
+  },
+  "keywords": [
+    "password",
+    "react",
+    "hooks",
+    "generator",
+    "security",
+    "strength",
+    "typescript"
+  ],
+  "author": "TrustVault",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iAn-P1nt0/TrustVault-password-utils.git",
+    "directory": "packages/react"
+  },
+  "bugs": {
+    "url": "https://github.com/iAn-P1nt0/TrustVault-password-utils/issues"
+  },
+  "homepage": "https://github.com/iAn-P1nt0/TrustVault-password-utils#readme",
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  },
+  "dependencies": {
+    "@trustvault/password-utils": "^1.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/react-hooks": "^8.0.1",
+    "@types/react": "^18.2.45",
+    "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^27.2.0",
+    "react": "^18.2.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -10,14 +10,17 @@ Cryptographically secure password and passphrase generation utilities with compr
 
 ## Features
 
-✅ **Cryptographically Secure** - Uses Web Crypto API with rejection sampling to eliminate modulo bias
-✅ **Password Generation** - Configurable length (8-128 chars) with customizable character sets
-✅ **Passphrase Generation** - Diceware-based with 384-word EFF wordlist subset
-✅ **Strength Analysis** - Powered by zxcvbn with detailed feedback and suggestions
-✅ **Quick Validation** - Lightweight real-time password checking
-✅ **TypeScript First** - Full type definitions and IntelliSense support
+✅ **Cryptographically Secure** - Uses Web Crypto API with rejection sampling to eliminate modulo bias  
+✅ **Password Generation** - Configurable length (8-128 chars) with customizable character sets  
+✅ **Passphrase Generation** - Diceware-based with 384-word EFF wordlist subset  
+✅ **Breach Checking** - HIBP integration with k-Anonymity protocol (privacy-preserving)  
+✅ **Strength Analysis** - Powered by zxcvbn (lazy-loaded) with detailed feedback  
+✅ **Argon2id Hashing** - OWASP-recommended password hashing with Web Workers  
+✅ **Policy Validation** - NIST 800-63B compliance checking  
+✅ **Quick Validation** - Lightweight real-time password checking  
+✅ **TypeScript First** - Full type definitions and IntelliSense support  
+✅ **Framework Integrations** - React hooks, Web Component, CLI tool  
 ✅ **Tree Shakeable** - Optimized bundle size with ESM and CommonJS support
-✅ **Zero Dependencies** - Only `@noble/hashes` and `zxcvbn` for core functionality
 
 ## Installation
 
@@ -94,6 +97,132 @@ console.log(check.feedback);   // "Password is too short"
 console.log(check.score);      // 25
 console.log(check.strength);   // "weak"
 ```
+
+## Framework Integrations
+
+### React Hooks
+
+Install the React hooks package:
+
+```bash
+npm install @trustvault/password-utils-react
+```
+
+```tsx
+import { usePasswordGenerator, usePasswordStrength } from '@trustvault/password-utils-react';
+
+function PasswordForm() {
+  const { password, generate, loading } = usePasswordGenerator({ length: 20 });
+  const { strength } = usePasswordStrength(password, { debounce: 300 });
+
+  return (
+    <div>
+      <button onClick={() => generate()} disabled={loading}>
+        Generate Password
+      </button>
+      <input type="text" value={password} readOnly />
+      {strength && <StrengthMeter score={strength.score} />}
+    </div>
+  );
+}
+```
+
+**Available Hooks:**
+- `usePasswordGenerator` - Generate passwords with state management
+- `usePasswordStrength` - Real-time strength analysis with debouncing
+- `usePassphraseGenerator` - Generate passphrases
+- `useBreachCheck` - Check passwords against HIBP database
+
+📖 [Full React Documentation](./packages/react/README.md)
+
+---
+
+### Web Component
+
+Install the Web Component package:
+
+```bash
+npm install @trustvault/password-generator-element
+```
+
+**Works with any framework or vanilla HTML:**
+
+```html
+<script type="module">
+  import '@trustvault/password-generator-element';
+</script>
+
+<password-generator 
+  length="20"
+  include-symbols="true"
+  auto-generate="false">
+</password-generator>
+
+<script>
+  const generator = document.querySelector('password-generator');
+  
+  generator.addEventListener('password-generated', (e) => {
+    console.log('Password:', e.detail.password);
+    console.log('Strength:', e.detail.strength);
+  });
+</script>
+```
+
+**Features:**
+- ✅ Framework-agnostic (works everywhere)
+- ✅ Shadow DOM for style encapsulation
+- ✅ Full keyboard accessibility (WCAG 2.1 Level AA)
+- ✅ Dark mode support
+- ✅ Custom events for integration
+
+📖 [Full Web Component Documentation](./packages/web-component/README.md)
+
+---
+
+### CLI Tool
+
+Install globally or use with npx:
+
+```bash
+# Global install
+npm install -g @trustvault/password-cli
+
+# Or use with npx (no install required)
+npx @trustvault/password-cli generate
+```
+
+**Commands:**
+
+```bash
+# Generate password
+tvpg generate --length 32 --count 5
+
+# Generate passphrase
+tvpg passphrase --words 6 --separator dash
+
+# Analyze password strength
+tvpg analyze "MyP@ssw0rd123"
+
+# Check for breaches
+tvpg breach "password123"
+
+# Quick strength check
+tvpg quick "abc123"
+
+# JSON output
+tvpg generate --json
+```
+
+**Features:**
+- ✅ Auto-copy to clipboard (30s timeout)
+- ✅ Colorized terminal output
+- ✅ JSON output for scripting
+- ✅ Batch generation
+- ✅ Cross-platform (macOS, Linux, Windows)
+
+📖 [Full CLI Documentation](./packages/cli/README.md)
+
+---
 
 ## API Reference
 

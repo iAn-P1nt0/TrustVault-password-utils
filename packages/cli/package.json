@@ -1,0 +1,59 @@
+{
+  "name": "@trustvault/password-cli",
+  "version": "1.0.0",
+  "description": "CLI tool for generating secure passwords and passphrases",
+  "type": "module",
+  "bin": {
+    "tvpg": "./dist/cli.js",
+    "trustvault-password": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/cli.ts src/index.ts --format esm --dts --clean && chmod +x dist/cli.js",
+    "dev": "tsup src/cli.ts --format esm --watch",
+    "test": "vitest run",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "cli",
+    "password",
+    "generator",
+    "passphrase",
+    "security",
+    "terminal",
+    "command-line"
+  ],
+  "author": "TrustVault",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iAn-P1nt0/TrustVault-password-utils.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/iAn-P1nt0/TrustVault-password-utils/issues"
+  },
+  "homepage": "https://github.com/iAn-P1nt0/TrustVault-password-utils#readme",
+  "dependencies": {
+    "@trustvault/password-utils": "^1.0.0",
+    "chalk": "^5.3.0",
+    "clipboardy": "^4.0.0",
+    "commander": "^12.0.0",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

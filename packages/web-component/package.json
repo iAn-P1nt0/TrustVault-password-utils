@@ -1,0 +1,62 @@
+{
+  "name": "@trustvault/password-generator-element",
+  "version": "1.0.0",
+  "description": "Web Component for password generation - framework agnostic",
+  "type": "module",
+  "main": "./dist/password-generator.cjs",
+  "module": "./dist/password-generator.js",
+  "types": "./dist/password-generator.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/password-generator.d.ts",
+      "import": "./dist/password-generator.js",
+      "require": "./dist/password-generator.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/password-generator.ts --format cjs,esm --dts --clean --minify",
+    "dev": "tsup src/password-generator.ts --format esm --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "web-component",
+    "custom-element",
+    "password",
+    "generator",
+    "shadow-dom",
+    "accessibility",
+    "framework-agnostic"
+  ],
+  "author": "TrustVault",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iAn-P1nt0/TrustVault-password-utils.git",
+    "directory": "packages/web-component"
+  },
+  "bugs": {
+    "url": "https://github.com/iAn-P1nt0/TrustVault-password-utils/issues"
+  },
+  "homepage": "https://github.com/iAn-P1nt0/TrustVault-password-utils#readme",
+  "dependencies": {
+    "@trustvault/password-utils": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^27.2.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
