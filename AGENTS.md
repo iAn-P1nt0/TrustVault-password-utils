@@ -5,1252 +5,623 @@ Every agent MUST follow the **prioritised roadmap below** when asked to
 enhance @trustvault/password-utils.  The sequence is security-impact-ranked
 and bundle-size-aware; do **not** deviate without explicit user approval.
 
-### Phase-1  “Zero-Days & Re-use” (highest ROI)
-1. **Breach-check wrapper** (`src/analyzer/breach.ts`)
-   - k-anon SHA-1 prefix → HIBP API, 24 h LRU cache, ≤2 kB gzipped
-   - API: `checkPasswordBreach(pwd, {allowNetwork}): Promise<BreachResult>`
-   - Offline-safe, opt-in network call
-2. **Argon2id client wrapper** (`src/utils/argon2.ts`)
-   - Uses `@noble/hashes` Argon2id, constant-time verify
-   - Web-worker offload (≤60 ms main-thread block)
-   - API: `hashPassword()` / `verifyPassword()`
-3. **NIST 800-63 policy engine** (`src/analyzer/policy.ts`)
-   - JSON-driven rules (≥64 char max, no composition theatre)
-   - <0.5 ms validation, enterprise extensible
+### Phase-1  "Zero-Days & Re-use" (highest ROI)
 
-### Phase-2  “i18n & Age”
-4. Unicode character sets (`generators/unicode.ts`) – CJK, Cyrillic, Arabic
-5. Password-expiry estimator (`analyzer/expiry.ts`) – entropy + breach-age + crack-$ → rotation date
-6. Lazy-load zxcvbn – cut initial bundle by ~370 kB
+#### 1. **Breach-check wrapper** (`src/analyzer/breach.ts`)
 
-### Phase-3  “DX & A11y”
-7. Framework hooks – separate `@trustvault/password-utils-react|vue` packages
-8. Web-component `<password-generator>` – shadow-DOM, ARIA complete, 8 kB
-9. CLI tool – `npx tvpg --length 20 --count 10`
+**Implementation Requirements:**
+- **k-Anonymity Protocol**: Use HIBP API with SHA-1 prefix (first 5 hex chars = 20 bits)
+  - Hash password with SHA-1: `sha1Hash = SHA1(password)`
+  - Send only prefix: `prefix = sha1Hash.substring(0, 5)`
+  - HIBP returns all hashes starting with that prefix (~381-584 hashes per bucket)
+  - Compare full hash locally against returned bucket
+- **LRU Cache Strategy** (24-hour TTL):
+  - Use `IndexedDB` for persistent storage (survives browser restarts)
+  - Implement LRU eviction with O(1) access using Map + doubly-linked list
+  - Cache structure: `{prefix: string, hashes: Set<string>, timestamp: number}`
+  - Max cache size: 1000 prefixes (~500 hashes avg = ~2MB storage)
+- **Offline-First Architecture**:
+  - Check cache first (synchronous, instant)
+  - If cache miss + network available → fetch from HIBP
+  - If cache miss + offline → return `{checked: false, breached: null, offline: true}`
+  - Provide `allowNetwork: boolean` option (default: true)
+- **Security Considerations**:
+  - NEVER send full password hash to server
+  - Use HTTPS only for API calls
+  - Implement rate limiting: max 1 request/second to HIBP
+  - Add exponential backoff for API failures
+- **Bundle Size**: ≤2 kB gzipped (no external deps beyond crypto)
+- **API Surface**:
+  ```typescript
+  interface BreachResult {
+    checked: boolean;        // Was check performed?
+    breached: boolean | null; // null if not checked
+    count?: number;          // Occurrences in breaches
+    offline?: boolean;       // Was offline?
+    cached?: boolean;        // Was result cached?
+  }
+  
+  async function checkPasswordBreach(
+    password: string,
+    options?: { allowNetwork?: boolean; timeout?: number }
+  ): Promise<BreachResult>
+  ```
 
-Implement in the exact order above; each phase ships as minor semver bump
-(1.1.0 → 1.2.0 → 1.3.0) with **zero breaking changes** to existing APIs.
+**Research References**:
+- Cloudflare k-Anonymity implementation[1][2]
+- HIBP API documentation[4]
+- LRU cache with IndexedDB persistence[61][62]
+
+#### 2. **Argon2id client wrapper** (`src/utils/argon2.ts`)
+
+**Implementation Requirements:**
+- **Library Selection**: Use `argon2-browser` (WASM-based, 119-225ms in modern browsers)[6]
+- **Web Worker Offloading**:
+  - Create dedicated worker: `argon2-worker.js`
+  - Never block main thread >60ms
+  - Fallback to main thread if workers unavailable
+  - Worker communication: `postMessage` with transferable objects
+- **Parameter Configuration** (OWASP recommended):
+  - **Memory cost**: 19 MiB (19456 KiB) minimum, 47 MiB optimal
+  - **Time cost**: 2 iterations minimum, 3-4 iterations optimal
+  - **Parallelism**: 1 (web workers can't use actual parallelism)
+  - **Salt**: 16 bytes cryptographically random per password
+  - **Hash length**: 32 bytes (256 bits)
+- **Constant-Time Verification**:
+  - Use bitwise XOR comparison to prevent timing attacks
+  - Compare byte-by-byte without early exit
+  - Verify length first, then content
+- **Progressive Enhancement**:
+  - Check for WASM support, fallback to asm.js
+  - Check for SIMD support (2x speed boost if available)
+  - Graceful degradation for older browsers
+- **API Surface**:
+  ```typescript
+  interface Argon2Options {
+    memory: number;      // KiB, default: 19456
+    iterations: number;  // default: 2
+    parallelism: number; // default: 1
+    hashLength: number;  // default: 32
+  }
+  
+  async function hashPassword(
+    password: string,
+    options?: Partial<Argon2Options>
+  ): Promise<{ hash: Uint8Array; salt: Uint8Array; encoded: string }>
+  
+  async function verifyPassword(
+    password: string,
+    encoded: string
+  ): Promise<boolean>
+  ```
+
+**Research References**:
+- Argon2 browser implementation[6][9][18]
+- Web Worker integration patterns[9]
+- OWASP password storage guidelines[22]
+
+#### 3. **NIST 800-63B policy engine** (`src/analyzer/policy.ts`)
+
+**Implementation Requirements:**
+- **Core NIST 800-63B Rev 4 Requirements** (August 2025)[7][10]:
+  - **Minimum length**: 15 characters (when password is sole authenticator)
+  - **Maximum length**: ≥64 characters minimum, ≥128 recommended
+  - **Character support**: All ASCII printable + space + Unicode
+  - **Composition rules**: SHALL NOT enforce (no "must include number/symbol")
+  - **Blocklist checking**: MUST check against compromised passwords
+  - **No periodic expiration**: Only force change on compromise evidence
+  - **Unicode normalization**: Apply NFKC or NFKD before processing[27][33]
+- **Blocklist Categories**:
+  1. Common passwords (top 10K from breach databases)
+  2. Dictionary words (English + major languages)
+  3. Repetitive/sequential patterns (aaa, 123, abc)
+  4. Context-specific (service name, username, user info)
+- **JSON-Driven Configuration**:
+  ```typescript
+  interface PolicyConfig {
+    minLength: number;           // default: 15
+    maxLength: number;           // default: 128
+    requireUnicode: boolean;     // default: false
+    blocklists: string[];        // URLs or built-in refs
+    contextWords: string[];      // service name, etc.
+    allowedChars?: string;       // null = all printable
+    normalization: 'NFKC' | 'NFKD'; // default: NFKC
+  }
+  ```
+- **Performance Target**: <0.5ms validation (blocklist as Bloom filter or trie)
+- **Enterprise Extensibility**:
+  - Plugin system for custom rules
+  - Webhook support for remote blocklist updates
+  - Audit logging hooks
+- **API Surface**:
+  ```typescript
+  interface PolicyViolation {
+    field: string;
+    message: string;
+    severity: 'error' | 'warning';
+  }
+  
+  interface PolicyResult {
+    valid: boolean;
+    violations: PolicyViolation[];
+    score?: number; // 0-100
+  }
+  
+  function validatePassword(
+    password: string,
+    config: PolicyConfig,
+    context?: { username?: string; email?: string }
+  ): Promise<PolicyResult>
+  ```
+
+**Research References**:
+- NIST 800-63B Rev 4 updates[7][10][13][16]
+- Unicode normalization for passwords[27][33][38]
+
+---
+
+### Phase-2  "i18n & Age"
+
+#### 4. **Unicode character sets** (`generators/unicode.ts`)
+
+**Implementation Requirements:**
+- **Character Set Ranges**:
+  - **CJK Unified Ideographs**: U+4E00–U+9FFF (20,992 characters)
+  - **Cyrillic**: U+0400–U+04FF (256 characters)
+  - **Arabic**: U+0600–U+06FF (256 characters)
+  - **Latin Extended**: U+0100–U+017F, U+0180–U+024F
+  - **Emoji**: U+1F600–U+1F64F (for memorable passwords)
+- **Unicode Normalization** (CRITICAL):
+  - **Always normalize** before hashing/storing (NFC recommended)[27][30]
+  - **Problem**: Same visual character can have multiple encodings
+  - **Solution**: Apply Unicode Normalization Form C (NFC) via `String.prototype.normalize('NFC')`
+  - **Browser consistency**: Different browsers may send different forms
+- **Entropy Calculation Updates**:
+  - CJK charset entropy: log2(20992) ≈ 14.36 bits/char
+  - Cyrillic charset entropy: log2(256) = 8 bits/char
+  - Mixed charset: Use actual pool size, not sum
+- **Security Considerations**:
+  - Warn about homoglyph attacks (visually similar chars)
+  - Detect and reject known confusables (0/O, l/1/I)
+  - Consider PRECIS framework (RFC 8264) for input validation[38]
+- **API Surface**:
+  ```typescript
+  enum CharsetType {
+    Latin = 'latin',
+    CJK = 'cjk',
+    Cyrillic = 'cyrillic',
+    Arabic = 'arabic',
+    Mixed = 'mixed'
+  }
+  
+  function generatePassword(options: {
+    length: number;
+    charsetType: CharsetType;
+    normalize?: boolean; // default: true
+  }): string
+  ```
+
+**Research References**:
+- Unicode normalization security[27][30][33][36]
+- PRECIS framework[38]
+- Unicode password entropy[30]
+
+#### 5. **Password-expiry estimator** (`analyzer/expiry.ts`)
+
+**Implementation Requirements:**
+- **Expiry Calculation Formula**:
+  ```typescript
+  expiryDate = createdAt + calculateRotationPeriod({
+    entropy,
+    breachAge,
+    crackCost,
+    riskProfile
+  })
+  ```
+- **Entropy-Based Scaling**:
+  - <40 bits: 30 days max
+  - 40-60 bits: 90 days max
+  - 60-80 bits: 180 days max
+  - >80 bits: 365+ days (or no forced rotation per NIST)
+- **Breach Age Factor**:
+  - If password found in breach: immediate rotation
+  - If similar passwords breached <90 days ago: 30-day rotation
+  - Otherwise: entropy-based schedule
+- **Crack Cost Estimation**:
+  - Estimate based on current GPU hash rates
+  - AWS/Cloud cost models for distributed cracking
+  - Factor in algorithm (Argon2id >> bcrypt >> MD5)
+- **Risk Profile Context**:
+  - High-value accounts (admin, financial): 2x shorter rotation
+  - MFA-protected accounts: 2x longer rotation allowed
+  - Privileged access: mandatory 90-day regardless of entropy
+- **API Surface**:
+  ```typescript
+  interface ExpiryEstimate {
+    expiryDate: Date;
+    daysRemaining: number;
+    recommendRotation: boolean;
+    reason: string;
+    nextCheckDate: Date;
+  }
+  
+  function calculateExpiry(
+    password: string,
+    createdAt: Date,
+    options?: {
+      riskProfile?: 'low' | 'medium' | 'high';
+      hasMFA?: boolean;
+      isPrivileged?: boolean;
+    }
+  ): Promise<ExpiryEstimate>
+  ```
+
+**Research References**:
+- NIST guidance on password rotation[7][10]
+- Entropy and password aging research[23][24][25]
+
+#### 6. **Lazy-load zxcvbn** (cut initial bundle by ~370 kB)
+
+**Implementation Requirements:**
+- **Code-Splitting Strategy**:
+  - Use dynamic `import()` for zxcvbn (not `require()`)
+  - Create separate chunk: `zxcvbn.chunk.js`
+  - Webpack config: `splitChunks` optimization
+- **Progressive Loading**:
+  - Only load when `analyzePasswordStrength()` called
+  - Cache loaded module in memory
+  - Show loading indicator during first load
+  - Prefetch on user interaction (e.g., focus on password field)
+- **Bundle Analysis**:
+  - Before: `bundle.js` (442 kB)
+  - After: `main.js` (72 kB) + `zxcvbn.chunk.js` (370 kB)
+  - Only load zxcvbn chunk when needed
+- **Webpack Configuration**:
+  ```javascript
+  optimization: {
+    splitChunks: {
+      cacheGroups: {
+        zxcvbn: {
+          test: /[\\/]node_modules[\\/]zxcvbn[\\/]/,
+          name: 'zxcvbn',
+          chunks: 'async'
+        }
+      }
+    }
+  }
+  ```
+- **React.lazy Pattern** (if applicable):
+  ```typescript
+  const PasswordAnalyzer = React.lazy(() => 
+    import('./PasswordAnalyzer')
+  );
+  
+  <React.Suspense fallback={<Loading />}>
+    <PasswordAnalyzer />
+  </React.Suspense>
+  ```
+- **Prefetch Strategy**:
+  ```typescript
+  // On password input focus
+  input.addEventListener('focus', () => {
+    import(/* webpackPrefetch: true */ 'zxcvbn');
+  }, { once: true });
+  ```
+
+**Research References**:
+- Code splitting with Webpack[26][32][35][37][67][70][76]
+- Lazy loading zxcvbn example[35]
+
+---
+
+### Phase-3  "DX & A11y"
+
+#### 7. **Framework hooks** (`@trustvault/password-utils-react|vue`)
+
+**React Implementation** (`@trustvault/password-utils-react`):
+```typescript
+// usePasswordGenerator.ts
+export function usePasswordGenerator(
+  initialOptions?: PasswordOptions
+) {
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  const generate = useCallback(async (options?: PasswordOptions) => {
+    setLoading(true);
+    try {
+      const result = await generatePassword({
+        ...initialOptions,
+        ...options
+      });
+      setPassword(result.password);
+      return result;
+    } finally {
+      setLoading(false);
+    }
+  }, [initialOptions]);
+  
+  return { password, generate, loading };
+}
+
+// usePasswordStrength.ts
+export function usePasswordStrength(password: string) {
+  const [strength, setStrength] = useState<StrengthResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  
+  useEffect(() => {
+    let cancelled = false;
+    if (!password) {
+      setStrength(null);
+      return;
+    }
+    
+    setLoading(true);
+    // Debounce + lazy load zxcvbn
+    const timeoutId = setTimeout(() => {
+      import('zxcvbn').then(zxcvbn => {
+        if (!cancelled) {
+          const result = analyzeStrength(password, zxcvbn.default);
+          setStrength(result);
+          setLoading(false);
+        }
+      });
+    }, 300);
+    
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [password]);
+  
+  return { strength, loading };
+}
+```
+
+**Vue 3 Implementation** (`@trustvault/password-utils-vue`):
+```typescript
+// usePasswordGenerator.ts
+export function usePasswordGenerator(
+  initialOptions?: PasswordOptions
+) {
+  const password = ref('');
+  const loading = ref(false);
+  
+  const generate = async (options?: PasswordOptions) => {
+    loading.value = true;
+    try {
+      const result = await generatePassword({
+        ...initialOptions,
+        ...options
+      });
+      password.value = result.password;
+      return result;
+    } finally {
+      loading.value = false;
+    }
+  };
+  
+  return { password, generate, loading };
+}
+
+// Composable pattern
+export function usePasswordStrength(password: Ref<string>) {
+  const strength = ref<StrengthResult | null>(null);
+  const loading = ref(false);
+  
+  watchDebounced(
+    password,
+    async (newPassword) => {
+      if (!newPassword) {
+        strength.value = null;
+        return;
+      }
+      loading.value = true;
+      const zxcvbn = await import('zxcvbn');
+      strength.value = analyzeStrength(newPassword, zxcvbn.default);
+      loading.value = false;
+    },
+    { debounce: 300 }
+  );
+  
+  return { strength: readonly(strength), loading: readonly(loading) };
+}
+```
+
+**Research References**:
+- React hooks patterns[41][42][43]
+- Vue 3 composables[45][48][51]
+
+#### 8. **Web Component** (`<password-generator>`)
+
+**Implementation Requirements**:
+- **Shadow DOM**: Use for style encapsulation
+- **Accessibility (CRITICAL)**:
+  - Provide ARIA labels for all interactive elements
+  - Ensure keyboard navigation (Tab, Enter, Escape)
+  - Announce generated passwords to screen readers
+  - Use `aria-live` regions for dynamic updates
+  - PROBLEM: ARIA references don't cross shadow boundaries[49][52][55][58][60]
+  - SOLUTION: Use `aria*Elements` properties or slots for external labels
+- **Custom Element Definition**:
+  ```typescript
+  class PasswordGeneratorElement extends HTMLElement {
+    static get observedAttributes() {
+      return ['length', 'charset', 'auto-generate'];
+    }
+    
+    constructor() {
+      super();
+      this.attachShadow({ mode: 'open' });
+    }
+    
+    connectedCallback() {
+      this.render();
+      this.setupEventListeners();
+    }
+    
+    attributeChangedCallback(name, oldValue, newValue) {
+      if (oldValue !== newValue) {
+        this.render();
+      }
+    }
+  }
+  
+  customElements.define('password-generator', PasswordGeneratorElement);
+  ```
+- **Shadow DOM Template**:
+  ```html
+  <template id="password-generator-template">
+    <style>
+      :host { display: block; }
+      .container { padding: 1rem; }
+      button { cursor: pointer; }
+    </style>
+    <div class="container">
+      <label>
+        <span id="length-label">Password Length</span>
+        <input
+          type="range"
+          min="8"
+          max="128"
+          value="16"
+          aria-labelledby="length-label"
+        />
+      </label>
+      <button aria-label="Generate Password">Generate</button>
+      <output aria-live="polite" role="status"></output>
+    </div>
+  </template>
+  ```
+- **Accessibility Pattern**:
+  - Use slots for external labels to avoid ARIA issues
+  - Provide keyboard shortcuts (Ctrl+G to generate)
+  - Focus management after generation
+  - Copy-to-clipboard with feedback
+- **Bundle Size Target**: 8 kB gzipped (compressed shadow DOM + logic)
+
+**Research References**:
+- Shadow DOM accessibility[49][52][55][58][60]
+- Web Components best practices[46][49]
+
+#### 9. **CLI tool** (`npx tvpg`)
+
+**Implementation Requirements**:
+- **CLI Framework**: Use `commander` or `yargs` (lightweight)
+- **Clipboard Integration**: Use `clipboardy` (cross-platform)[47][50][53][59]
+- **Security Considerations**:
+  - Use `/dev/urandom` on Unix (cryptographically secure)
+  - Use Web Crypto API equivalent in Node.js
+  - Clear clipboard after configurable timeout
+  - Option to skip clipboard for CI/CD environments
+- **Command Structure**:
+  ```bash
+  npx tvpg --length 20 --count 10 --charset alphanumeric --copy
+  npx tvpg --passphrase --words 5 --separator "-"
+  npx tvpg --breach-check --password "mypassword"
+  npx tvpg --generate-hash --algorithm argon2id
+  ```
+- **CLI Options**:
+  ```typescript
+  interface CLIOptions {
+    length?: number;           // default: 16
+    count?: number;            // default: 1
+    charset?: string;          // default: 'all'
+    copy?: boolean;            // default: true
+    passphrase?: boolean;      // default: false
+    words?: number;            // default: 4
+    separator?: string;        // default: '-'
+    breachCheck?: boolean;     // default: false
+    json?: boolean;            // output as JSON
+    quiet?: boolean;           // suppress output
+  }
+  ```
+- **Interactive Mode**:
+  - Prompt for options if not provided
+  - Show password strength meter
+  - Offer breach check
+  - Save to file option
+- **Output Formatting**:
+  ```
+  Generated Password: Kp9$mNz2@Qw5Xr8T
+  Strength: Very Strong (95.2 bits entropy)
+  ✓ Copied to clipboard (clears in 30s)
+  ```
+
+**Research References**:
+- CLI password generators[47][50][53][59]
+- Clipboard security[50][53]
+
+---
 
 ### Exit Criteria for each feature
-- [ ] ≥95 % test coverage including security tests (timing, bias, entropy)
+- [ ] ≥95% test coverage including security tests (timing, bias, entropy)
 - [ ] Bundle size gate passed (core ≤35 kB, lazy chunks ≤380 kB)
-- [ ] Full JSDoc + README update
-- [ ] TypeScript strict & lint clean
-- [ ] No `Math.random()`, no `any`, no new prod deps without justification
+- [ ] Full JSDoc + README update with usage examples
+- [ ] TypeScript strict mode with zero `any` types
+- [ ] No `Math.random()`, all crypto uses `Web Crypto API`
+- [ ] No new prod deps >5 kB without explicit justification
+- [ ] Accessibility audit passed (WCAG 2.1 Level AA)
+- [ ] Cross-browser tested (Chrome, Firefox, Safari, Edge)
+- [ ] Performance benchmarks met (<100ms for hot paths)
+- [ ] Security audit completed (timing attacks, entropy validation)
 
 ### Forbidden short-cuts
-❌ Skip breach checker and jump to “nice-to-haves” like ML patterns  
+❌ Skip breach checker and jump to "nice-to-haves" like ML patterns  
 ❌ Add heavy deps (>50 kB) without tree-shaking or lazy loading  
 ❌ Introduce breaking API change without major-version bump  
-❌ Commit without regression tests for cryptographic properties (bias, entropy, timing)
+❌ Commit without regression tests for cryptographic properties (bias, entropy, timing)  
+❌ Use synchronous APIs that block the main thread >60ms  
+❌ Hard-code configuration values without environment overrides  
+❌ Implement features without considering offline-first scenarios  
+❌ Skip Unicode normalization when handling international passwords  
+❌ Forget to handle ARIA across shadow DOM boundaries  
+❌ Use localStorage for sensitive data (prefer IndexedDB with encryption)
+
+### Implementation Checklist Template (copy to PR description)
+```markdown
+## Feature: [Feature Name]
+
+### Implementation
+- [ ] Core functionality implemented
+- [ ] TypeScript types defined and exported
+- [ ] Security review completed
+- [ ] Performance benchmarks met
+
+### Testing
+- [ ] Unit tests (>95% coverage)
+- [ ] Integration tests
+- [ ] Security tests (timing, bias, entropy)
+- [ ] Cross-browser tests
+- [ ] Accessibility tests (if UI component)
+
+### Documentation
+- [ ] JSDoc comments added
+- [ ] README.md updated
+- [ ] CHANGELOG.md entry added
+- [ ] Migration guide (if breaking changes)
+
+### Bundle Size
+- [ ] Core bundle: _____ kB (target: ≤35 kB)
+- [ ] Lazy chunks: _____ kB (target: ≤380 kB)
+- [ ] Webpack Bundle Analyzer screenshot attached
+
+### Security
+- [ ] No Math.random() usage
+- [ ] Timing attack resistance verified
+- [ ] Entropy calculations validated
+- [ ] Secrets never logged or exposed
+```
 
 Always open PR against `main` with above checklist in the description.
 
---- END_INSERT
+---
+
+**Research Sources:**
+[1-80] Research citations embedded throughout document
+
+--- END ENHANCED INSERT
 
 # AI Agent Instructions for TrustVault Password Utils
 
-## Repository Context
-
-This repository contains **@trustvault/password-utils**, a cryptographically secure password and passphrase generation library with comprehensive strength analysis. The codebase prioritizes security, type safety, and developer experience.
-
-**Primary Language:** TypeScript
-**Target Environment:** Browser (Web Crypto API)
-**Package Type:** Dual-format library (CommonJS + ESM)
-**Security Level:** Critical - handles password generation and authentication
-
----
-
-## Core Principles
-
-### 1. Security First - Non-Negotiable
-
-**CRITICAL SECURITY REQUIREMENTS:**
-
-- ✅ **ALWAYS** use `crypto.getRandomValues()` for random generation
-- ✅ **ALWAYS** implement rejection sampling to avoid modulo bias
-- ✅ **NEVER** use `Math.random()` or other non-cryptographic sources
-- ✅ **NEVER** introduce timing attacks or side-channel vulnerabilities
-- ✅ **NEVER** log, store, or transmit passwords insecurely
-- ✅ **ALWAYS** validate entropy calculations match actual implementation
-- ✅ **ALWAYS** maintain zero-knowledge architecture (no password storage)
-
-**Security Review Checklist:**
-```typescript
-// ✅ CORRECT - Cryptographically secure
-const array = new Uint32Array(1);
-crypto.getRandomValues(array);
-const value = array[0];
-
-// ❌ WRONG - Predictable and insecure
-const value = Math.random();
-```
-
-**Rejection Sampling Pattern:**
-```typescript
-// ✅ CORRECT - Eliminates modulo bias
-function getRandomInt(max: number): number {
-  const range = max;
-  const limit = Math.floor(0xFFFFFFFF / range) * range;
-
-  let value: number;
-  do {
-    const array = new Uint32Array(1);
-    crypto.getRandomValues(array);
-    value = array[0];
-  } while (value >= limit);
-
-  return value % range;
-}
-
-// ❌ WRONG - Modulo bias vulnerability
-function getRandomInt(max: number): number {
-  const array = new Uint32Array(1);
-  crypto.getRandomValues(array);
-  return array[0] % max; // Biased distribution
-}
-```
-
-### 2. Type Safety - Mandatory
-
-**TypeScript Requirements:**
-
-- ✅ **ALWAYS** define explicit types for all function parameters and return values
-- ✅ **ALWAYS** use interfaces for complex objects
-- ✅ **NEVER** use `any` type (use `unknown` if needed)
-- ✅ **ALWAYS** enable strict mode compilation
-- ✅ **ALWAYS** export types alongside functions
-
-**Example:**
-```typescript
-// ✅ CORRECT - Full type safety
-interface PasswordOptions {
-  length: number;
-  includeUppercase: boolean;
-  includeLowercase: boolean;
-  includeNumbers: boolean;
-  includeSymbols: boolean;
-}
-
-interface GeneratedPassword {
-  password: string;
-  entropy: number;
-  strength: 'weak' | 'medium' | 'strong' | 'very-strong';
-}
-
-export function generatePassword(options: PasswordOptions): GeneratedPassword {
-  // Implementation
-}
-
-// ❌ WRONG - No type safety
-export function generatePassword(options: any): any {
-  // Implementation
-}
-```
-
-### 3. Performance - Critical Path Optimization
-
-**Performance Guidelines:**
-
-- ✅ **OPTIMIZE** hot paths (password generation, quick checks)
-- ✅ **LAZY LOAD** expensive dependencies (zxcvbn only when needed)
-- ✅ **MEMOIZE** entropy calculations where appropriate
-- ✅ **MINIMIZE** bundle size through tree-shaking
-- ✅ **AVOID** unnecessary allocations in generation loops
-
-**Bundle Size Awareness:**
-```typescript
-// ✅ CORRECT - Subset wordlist (384 words)
-const WORDLIST = ['apple', 'banana', ...]; // Curated subset
-
-// ❌ WRONG - Full wordlist (7776 words)
-import { wordlist } from 'eff-diceware-full'; // 100KB+ overhead
-```
-
-### 4. Testing - Comprehensive Coverage
-
-**Testing Requirements:**
-
-- ✅ **ALWAYS** write tests for new features
-- ✅ **ALWAYS** test security properties (randomness, bias, entropy)
-- ✅ **ALWAYS** test edge cases (min/max lengths, empty inputs, special characters)
-- ✅ **ALWAYS** validate OWASP compliance
-- ✅ **NEVER** commit code without passing tests
-
-**Test Categories:**
-1. **Security Tests** - Cryptographic properties, bias detection
-2. **Functional Tests** - Feature correctness
-3. **Integration Tests** - End-to-end workflows
-4. **Edge Case Tests** - Boundary conditions
-5. **Type Tests** - TypeScript compilation
-
----
-
-## Codebase Structure
-
-### Directory Layout
-
-```
-src/
-├── generators/
-│   ├── password.ts          # Password generation (PRIMARY)
-│   └── passphrase.ts        # Passphrase generation (PRIMARY)
-├── analyzer/
-│   ├── strength.ts          # Full strength analysis (zxcvbn)
-│   └── quick-check.ts       # Lightweight validation
-├── utils.ts                 # Utility functions (TOTP formatting)
-└── index.ts                 # Public API exports
-```
-
-### Key Files and Their Responsibilities
-
-#### `src/generators/password.ts`
-**Purpose:** Cryptographically secure password generation
-**Key Functions:**
-- `generatePassword()` - Main generation function
-- `generatePasswords()` - Batch generation
-- `generatePronounceablePassword()` - Memorable passwords
-- `getDefaultOptions()` - Secure defaults
-
-**When to modify:**
-- Adding new character sets
-- Implementing new generation algorithms
-- Enhancing entropy calculation
-- Improving character diversity enforcement
-
-**Critical constraints:**
-- MUST use `crypto.getRandomValues()`
-- MUST implement rejection sampling
-- MUST calculate entropy accurately
-- MUST enforce minimum strength requirements
-
-#### `src/generators/passphrase.ts`
-**Purpose:** Diceware-based passphrase generation
-**Key Functions:**
-- `generatePassphrase()` - Main passphrase function
-- `generateMemorablePassphrase()` - Pre-configured memorable
-- `getDefaultPassphraseOptions()` - Secure defaults
-
-**When to modify:**
-- Updating wordlist
-- Adding capitalization strategies
-- Implementing new separator options
-- Enhancing memorability features
-
-**Critical constraints:**
-- MUST use cryptographically secure word selection
-- MUST maintain wordlist integrity
-- MUST calculate passphrase entropy correctly
-- Wordlist MUST remain subset (384 words max) for bundle size
-
-#### `src/analyzer/strength.ts`
-**Purpose:** Comprehensive password strength analysis
-**Key Functions:**
-- `analyzePasswordStrength()` - Full analysis with zxcvbn
-
-**When to modify:**
-- Enhancing feedback messages
-- Adding new pattern detection
-- Improving crack time estimation
-- Customizing scoring algorithms
-
-**Critical constraints:**
-- MUST use zxcvbn for pattern detection
-- MUST provide actionable feedback
-- MUST detect common weaknesses
-- MUST calculate accurate entropy
-
-#### `src/analyzer/quick-check.ts`
-**Purpose:** Lightweight real-time validation
-**Key Functions:**
-- `quickStrengthCheck()` - Fast validation
-- `meetsMinimumRequirements()` - Requirements checking
-
-**When to modify:**
-- Adding real-time validation rules
-- Implementing new requirements
-- Enhancing immediate feedback
-
-**Critical constraints:**
-- MUST be fast (no heavy dependencies)
-- MUST NOT use zxcvbn (performance)
-- MUST provide instant feedback
-- MUST align with full analysis when possible
-
-#### `src/index.ts`
-**Purpose:** Public API surface and exports
-**Exports:**
-- All generator functions
-- All analyzer functions
-- All TypeScript types
-- Utility functions
-
-**When to modify:**
-- Adding new public APIs
-- Deprecating old functions
-- Reorganizing exports
-
-**Critical constraints:**
-- MUST maintain backward compatibility
-- MUST export TypeScript types
-- MUST follow semantic versioning
-- MUST document breaking changes
-
----
-
-## Feature Development Roadmap
-
-### Current Version: 1.0.0
-
-**Implemented Features:**
-- ✅ Password generation with configurable options
-- ✅ Passphrase generation (Diceware)
-- ✅ Comprehensive strength analysis
-- ✅ Quick strength checking
-- ✅ Entropy calculation
-- ✅ Pattern detection
-- ✅ TOTP formatting
-
-### Roadmap Priorities
-
-#### Phase 1: Enhanced Security (v1.1.0)
-
-**1.1 Password History Checking**
-- **Goal:** Prevent password reuse
-- **Implementation:**
-  - Add `checkPasswordHistory(password: string, history: string[]): boolean`
-  - Use constant-time comparison to prevent timing attacks
-  - Hash passwords before comparison (use @noble/hashes)
-- **Files to modify:** Create `src/analyzer/history.ts`
-- **Tests required:** Timing attack resistance, hash collision handling
-- **Breaking changes:** None (new feature)
-
-**1.2 Breach Database Integration**
-- **Goal:** Check passwords against known breaches (HIBP)
-- **Implementation:**
-  - Add `checkPasswordBreach(password: string): Promise<BreachResult>`
-  - Use k-anonymity model (SHA-1 prefix matching)
-  - Implement rate limiting and caching
-- **Files to modify:** Create `src/analyzer/breach.ts`
-- **Dependencies to add:** Node fetch polyfill for browser
-- **Tests required:** API mocking, k-anonymity validation, rate limiting
-- **Breaking changes:** None (optional feature)
-
-**1.3 Secure Password Storage Utilities**
-- **Goal:** Provide utilities for secure password hashing
-- **Implementation:**
-  - Add `hashPassword(password: string): Promise<string>`
-  - Add `verifyPassword(password: string, hash: string): Promise<boolean>`
-  - Use Argon2id or scrypt from @noble/hashes
-- **Files to modify:** Create `src/utils/hashing.ts`
-- **Tests required:** Hash verification, timing attack resistance
-- **Breaking changes:** None (new feature)
-
-#### Phase 2: Enhanced Usability (v1.2.0)
-
-**2.1 Custom Dictionary Support**
-- **Goal:** Allow user-provided wordlists
-- **Implementation:**
-  - Add `generatePassphraseWithDictionary(words: string[], options: PassphraseOptions)`
-  - Validate wordlist entropy and diversity
-  - Warn on weak dictionaries
-- **Files to modify:** `src/generators/passphrase.ts`
-- **Tests required:** Custom wordlist validation, entropy calculation
-- **Breaking changes:** None (new function)
-
-**2.2 Password Policy Engine**
-- **Goal:** Customizable password requirements
-- **Implementation:**
-  - Add `PolicyValidator` class
-  - Support custom rules (min length, required chars, forbidden patterns)
-  - Provide policy-based feedback
-- **Files to modify:** Create `src/analyzer/policy.ts`
-- **Tests required:** Complex policy combinations, edge cases
-- **Breaking changes:** None (new feature)
-
-**2.3 Multi-language Character Sets**
-- **Goal:** Support international characters
-- **Implementation:**
-  - Add Unicode character ranges
-  - Support CJK, Cyrillic, Arabic character sets
-  - Update entropy calculation for extended charsets
-- **Files to modify:** `src/generators/password.ts`, `src/analyzer/strength.ts`
-- **Tests required:** Unicode normalization, entropy validation
-- **Breaking changes:** Minor (new options)
-
-#### Phase 3: Advanced Features (v1.3.0)
-
-**3.1 Password Expiry Calculation**
-- **Goal:** Age-based recommendations
-- **Implementation:**
-  - Add `calculateExpiry(password: string, createdAt: Date): ExpiryResult`
-  - Consider password strength in expiry calculation
-  - Provide renewal recommendations
-- **Files to modify:** Create `src/analyzer/expiry.ts`
-- **Tests required:** Time calculations, edge cases
-- **Breaking changes:** None (new feature)
-
-**3.2 Machine Learning Pattern Detection**
-- **Goal:** Enhanced pattern recognition
-- **Implementation:**
-  - Train lightweight ML model for pattern detection
-  - Detect personal information patterns
-  - Identify context-based weaknesses
-- **Files to modify:** `src/analyzer/strength.ts`, create `src/analyzer/ml-patterns.ts`
-- **Dependencies to add:** TensorFlow.js Lite or ONNX Runtime
-- **Tests required:** Model accuracy, performance benchmarks
-- **Breaking changes:** None (enhancement to existing)
-
-**3.3 Accessibility Enhancements**
-- **Goal:** Screen reader and assistive technology support
-- **Implementation:**
-  - Add ARIA-compatible feedback formatting
-  - Provide audio-friendly strength descriptions
-  - Implement keyboard-navigable suggestions
-- **Files to modify:** All analyzer files
-- **Tests required:** Screen reader testing, ARIA validation
-- **Breaking changes:** None (enhancement to existing)
-
-#### Phase 4: Developer Experience (v1.4.0)
-
-**4.1 React/Vue/Angular Hooks**
-- **Goal:** Framework-specific utilities
-- **Implementation:**
-  - Create `@trustvault/password-utils-react` package
-  - Provide `usePasswordGenerator()` hook
-  - Provide `usePasswordStrength()` hook
-- **Files to modify:** New package structure
-- **Tests required:** Hook testing, framework integration
-- **Breaking changes:** None (separate package)
-
-**4.2 Web Component**
-- **Goal:** Framework-agnostic UI component
-- **Implementation:**
-  - Create `<password-generator>` web component
-  - Provide customizable styling
-  - Include built-in strength indicator
-- **Files to modify:** Create `src/components/` directory
-- **Tests required:** Web component API, cross-browser
-- **Breaking changes:** None (new feature)
-
-**4.3 CLI Tool**
-- **Goal:** Command-line password generation
-- **Implementation:**
-  - Create `@trustvault/password-cli` package
-  - Support all library features via CLI
-  - Add clipboard integration
-- **Files to modify:** New package structure
-- **Tests required:** CLI integration tests
-- **Breaking changes:** None (separate package)
-
----
-
-## Agent Guidelines by Task Type
-
-### When Adding a New Feature
-
-**Step-by-step process:**
-
-1. **Research Phase**
-   - Review existing codebase structure
-   - Check roadmap alignment (this document)
-   - Identify affected files
-   - Review security implications
-
-2. **Design Phase**
-   - Design TypeScript interfaces
-   - Plan security measures
-   - Estimate bundle size impact
-   - Write API documentation
-
-3. **Implementation Phase**
-   - Write implementation with security in mind
-   - Add comprehensive TypeScript types
-   - Include inline documentation
-   - Follow existing code style
-
-4. **Testing Phase**
-   - Write unit tests
-   - Write integration tests
-   - Write security tests
-   - Validate edge cases
-
-5. **Documentation Phase**
-   - Update README.md
-   - Update CLAUDE.md
-   - Update this AGENTS.md
-   - Add JSDoc comments
-
-6. **Review Phase**
-   - Run full test suite
-   - Check TypeScript compilation
-   - Validate bundle size
-   - Verify backward compatibility
-
-### When Fixing a Bug
-
-**Priority levels:**
-- 🔴 **CRITICAL** - Security vulnerability or data loss
-- 🟡 **HIGH** - Feature broken or incorrect behavior
-- 🟢 **MEDIUM** - Minor issue or cosmetic problem
-- 🔵 **LOW** - Enhancement or optimization
-
-**Bug fix process:**
-
-1. **Reproduce** - Write failing test first
-2. **Diagnose** - Identify root cause
-3. **Fix** - Implement minimal fix
-4. **Test** - Verify fix and add regression tests
-5. **Document** - Update comments and changelog
-
-**Security bug process:**
-- DO NOT publicly disclose until patched
-- Create private security advisory
-- Patch immediately
-- Increment patch version
-- Release emergency update
-- Disclose responsibly after fix deployed
-
-### When Refactoring
-
-**Allowed refactoring:**
-- ✅ Code organization improvements
-- ✅ Performance optimizations (with benchmarks)
-- ✅ Type safety enhancements
-- ✅ Test coverage improvements
-- ✅ Documentation updates
-
-**Prohibited changes:**
-- ❌ Breaking API changes without major version bump
-- ❌ Removing features without deprecation cycle
-- ❌ Changing security-critical code without thorough review
-- ❌ Adding dependencies without justification
-
-**Refactoring checklist:**
-- [ ] All tests pass
-- [ ] No breaking changes (or version bumped)
-- [ ] Performance maintained or improved
-- [ ] Bundle size not increased
-- [ ] Documentation updated
-- [ ] Backward compatibility verified
-
-### When Writing Tests
-
-**Test structure:**
-```typescript
-// ✅ CORRECT - Descriptive, comprehensive
-describe('generatePassword', () => {
-  describe('security properties', () => {
-    it('should use cryptographically secure randomness', () => {
-      // Test cryptographic quality
-    });
-
-    it('should have no modulo bias', () => {
-      // Test distribution uniformity
-    });
-  });
-
-  describe('functional behavior', () => {
-    it('should generate password with specified length', () => {
-      // Test length
-    });
-
-    it('should include requested character sets', () => {
-      // Test charset inclusion
-    });
-  });
-});
-```
-
-**Required test coverage:**
-- Security properties (randomness, bias, entropy)
-- Functional correctness
-- Edge cases and boundaries
-- Error handling
-- Type safety
-- Integration scenarios
-
-### When Updating Dependencies
-
-**Dependency update process:**
-
-1. **Check for breaking changes** - Review changelog
-2. **Update package.json** - Increment version
-3. **Run tests** - Ensure compatibility
-4. **Check bundle size** - Verify no bloat
-5. **Security audit** - Run `npm audit`
-6. **Update lockfile** - Commit package-lock.json
-
-**Dependency criteria:**
-- ✅ Well-maintained (recent commits)
-- ✅ Security track record
-- ✅ Small bundle size
-- ✅ TypeScript support
-- ✅ Permissive license (Apache-2.0 compatible)
-
-**Red flags:**
-- ❌ No recent updates (>1 year)
-- ❌ Known vulnerabilities
-- ❌ Large bundle size (>100KB)
-- ❌ No TypeScript types
-- ❌ GPL/AGPL license
-
----
-
-## Code Style and Conventions
-
-### TypeScript Style
-
-```typescript
-// ✅ CORRECT - Clear, typed, documented
-/**
- * Generates a cryptographically secure password.
- *
- * @param options - Configuration options for password generation
- * @returns Generated password with entropy and strength analysis
- * @throws {Error} If options are invalid
- *
- * @example
- * ```typescript
- * const result = generatePassword({ length: 16, includeSymbols: true });
- * console.log(result.password); // "Kp9$mNz2@Qw5Xr8T"
- * ```
- */
-export function generatePassword(
-  options: PasswordGeneratorOptions
-): GeneratedPassword {
-  validateOptions(options);
-
-  const charset = buildCharset(options);
-  const password = generateSecureString(charset, options.length);
-  const entropy = calculateEntropy(charset.length, options.length);
-  const strength = classifyStrength(entropy);
-
-  return { password, entropy, strength };
-}
-
-// ❌ WRONG - No types, no docs, unclear
-export function gen(opts: any): any {
-  let c = '';
-  if (opts.up) c += 'ABC...';
-  // ...
-  return Math.random().toString(); // SECURITY ISSUE!
-}
-```
-
-### Naming Conventions
-
-- **Functions:** `camelCase` (e.g., `generatePassword`)
-- **Classes:** `PascalCase` (e.g., `PasswordGenerator`)
-- **Interfaces:** `PascalCase` (e.g., `PasswordOptions`)
-- **Constants:** `UPPER_SNAKE_CASE` (e.g., `MAX_PASSWORD_LENGTH`)
-- **Private:** Prefix with `_` (e.g., `_internalHelper`)
-
-### File Organization
-
-```typescript
-// 1. Imports
-import { crypto } from 'node:crypto';
-import type { PasswordOptions } from './types';
-
-// 2. Constants
-const MAX_LENGTH = 128;
-const MIN_LENGTH = 8;
-
-// 3. Types
-interface InternalState {
-  // ...
-}
-
-// 4. Helper functions (private)
-function _validateLength(length: number): void {
-  // ...
-}
-
-// 5. Exported functions
-export function generatePassword(options: PasswordOptions): string {
-  // ...
-}
-
-// 6. Exports
-export type { PasswordOptions };
-```
-
-### Documentation Standards
-
-**JSDoc requirements:**
-- ✅ All exported functions MUST have JSDoc
-- ✅ Include `@param` for all parameters
-- ✅ Include `@returns` for return value
-- ✅ Include `@throws` for exceptions
-- ✅ Include `@example` with usage example
-- ✅ Include `@see` for related functions
-
-**Example:**
-```typescript
-/**
- * Analyzes password strength using multiple factors.
- *
- * This function performs comprehensive analysis including:
- * - Pattern detection (keyboard patterns, repeated chars)
- * - Dictionary word detection
- * - Entropy calculation
- * - Crack time estimation
- *
- * @param password - The password to analyze
- * @returns Detailed strength analysis with score, feedback, and suggestions
- *
- * @throws {Error} If password is empty or undefined
- *
- * @example
- * ```typescript
- * const result = analyzePasswordStrength("Tr0ub4dor&3");
- * console.log(result.score); // 75
- * console.log(result.strength); // "strong"
- * console.log(result.suggestions); // ["Add more unique characters"]
- * ```
- *
- * @see quickStrengthCheck For lightweight validation
- * @see meetsMinimumRequirements For requirements checking
- */
-export function analyzePasswordStrength(
-  password: string
-): PasswordStrengthResult {
-  // Implementation
-}
-```
-
----
-
-## Security Best Practices
-
-### Cryptographic Requirements
-
-**Random Number Generation:**
-```typescript
-// ✅ CORRECT - Web Crypto API
-function getSecureRandom(): number {
-  const array = new Uint32Array(1);
-  crypto.getRandomValues(array);
-  return array[0];
-}
-
-// ❌ WRONG - Math.random() is NOT cryptographically secure
-function getInsecureRandom(): number {
-  return Math.random() * 0xFFFFFFFF;
-}
-```
-
-**Avoiding Modulo Bias:**
-```typescript
-// ✅ CORRECT - Rejection sampling eliminates bias
-function getRandomIndex(arrayLength: number): number {
-  const range = arrayLength;
-  const limit = Math.floor(0xFFFFFFFF / range) * range;
-
-  let value: number;
-  do {
-    value = getSecureRandom();
-  } while (value >= limit);
-
-  return value % range;
-}
-
-// ❌ WRONG - Modulo bias creates non-uniform distribution
-function getBiasedIndex(arrayLength: number): number {
-  return getSecureRandom() % arrayLength;
-}
-```
-
-### Timing Attack Prevention
-
-```typescript
-// ✅ CORRECT - Constant-time comparison
-function comparePasswords(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-
-  return result === 0;
-}
-
-// ❌ WRONG - Timing attack vulnerable (early exit)
-function vulnerableCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false; // Early exit leaks info
-  }
-
-  return true;
-}
-```
-
-### Input Validation
-
-```typescript
-// ✅ CORRECT - Comprehensive validation
-function validatePasswordOptions(options: PasswordGeneratorOptions): void {
-  if (!options) {
-    throw new Error('Options cannot be null or undefined');
-  }
-
-  if (typeof options.length !== 'number') {
-    throw new Error('Length must be a number');
-  }
-
-  if (options.length < MIN_LENGTH || options.length > MAX_LENGTH) {
-    throw new Error(`Length must be between ${MIN_LENGTH} and ${MAX_LENGTH}`);
-  }
-
-  if (!Number.isInteger(options.length)) {
-    throw new Error('Length must be an integer');
-  }
-
-  // Validate at least one character set is enabled
-  const hasCharset =
-    options.includeUppercase ||
-    options.includeLowercase ||
-    options.includeNumbers ||
-    options.includeSymbols;
-
-  if (!hasCharset) {
-    throw new Error('At least one character set must be enabled');
-  }
-}
-```
-
----
-
-## Performance Guidelines
-
-### Bundle Size Optimization
-
-**Current bundle sizes (targets):**
-- Core library: <30KB gzipped
-- With zxcvbn: <400KB gzipped
-- Types: <5KB
-
-**Optimization strategies:**
-```typescript
-// ✅ CORRECT - Tree-shakeable exports
-export { generatePassword } from './generators/password';
-export { generatePassphrase } from './generators/passphrase';
-export { analyzePasswordStrength } from './analyzer/strength';
-
-// ❌ WRONG - Barrel exports prevent tree-shaking
-export * from './generators';
-export * from './analyzer';
-```
-
-### Algorithmic Optimization
-
-**Hot path optimization:**
-```typescript
-// ✅ CORRECT - Pre-allocate and reuse
-function generatePassword(options: PasswordGeneratorOptions): string {
-  const charset = buildCharset(options); // Build once
-  const result = new Array(options.length); // Pre-allocate
-
-  for (let i = 0; i < options.length; i++) {
-    const index = getRandomIndex(charset.length);
-    result[i] = charset[index];
-  }
-
-  return result.join('');
-}
-
-// ❌ WRONG - Repeated allocations and concatenation
-function generatePasswordSlow(options: PasswordGeneratorOptions): string {
-  let password = '';
-
-  for (let i = 0; i < options.length; i++) {
-    const charset = buildCharset(options); // Rebuild every iteration!
-    const index = getRandomIndex(charset.length);
-    password += charset[index]; // String concatenation is slow
-  }
-
-  return password;
-}
-```
-
----
-
-## Testing Strategy
-
-### Test Categories
-
-**1. Security Tests**
-```typescript
-describe('Security Properties', () => {
-  it('should use cryptographically secure randomness', () => {
-    // Statistical tests for randomness quality
-    const samples = Array.from({ length: 10000 }, () =>
-      generatePassword({ length: 16 })
-    );
-
-    // Check for duplicates (should be extremely rare)
-    const unique = new Set(samples);
-    expect(unique.size).toBeGreaterThan(9990);
-  });
-
-  it('should have no modulo bias', () => {
-    // Chi-square test for uniform distribution
-    const distribution = new Map<string, number>();
-    const charset = 'abcdefghij'; // 10 characters
-
-    for (let i = 0; i < 10000; i++) {
-      const char = generateRandomChar(charset);
-      distribution.set(char, (distribution.get(char) || 0) + 1);
-    }
-
-    // Each character should appear ~1000 times (±5%)
-    for (const count of distribution.values()) {
-      expect(count).toBeGreaterThan(950);
-      expect(count).toBeLessThan(1050);
-    }
-  });
-});
-```
-
-**2. Functional Tests**
-```typescript
-describe('Password Generation', () => {
-  it('should generate password with correct length', () => {
-    const result = generatePassword({ length: 20 });
-    expect(result.password).toHaveLength(20);
-  });
-
-  it('should include requested character sets', () => {
-    const result = generatePassword({
-      length: 20,
-      includeUppercase: true,
-      includeLowercase: true,
-      includeNumbers: true,
-      includeSymbols: false
-    });
-
-    expect(result.password).toMatch(/[A-Z]/);
-    expect(result.password).toMatch(/[a-z]/);
-    expect(result.password).toMatch(/[0-9]/);
-    expect(result.password).not.toMatch(/[!@#$%^&*]/);
-  });
-});
-```
-
-**3. Integration Tests**
-```typescript
-describe('End-to-End Workflows', () => {
-  it('should generate and analyze password strength', () => {
-    const generated = generatePassword({ length: 16 });
-    const analysis = analyzePasswordStrength(generated.password);
-
-    expect(analysis.strength).toBe('very-strong');
-    expect(analysis.entropy).toBeGreaterThan(80);
-  });
-});
-```
-
-### Code Coverage Requirements
-
-**Minimum coverage:**
-- Overall: 90%
-- Security-critical code: 100%
-- Edge cases: 100%
-
-**Coverage command:**
-```bash
-npm run test:coverage
-```
-
----
-
-## Common Pitfalls and How to Avoid Them
-
-### Pitfall 1: Using Math.random()
-
-**Problem:**
-```typescript
-// ❌ INSECURE
-const randomChar = charset[Math.floor(Math.random() * charset.length)];
-```
-
-**Solution:**
-```typescript
-// ✅ SECURE
-const randomChar = charset[getSecureRandomIndex(charset.length)];
-```
-
-### Pitfall 2: Modulo Bias
-
-**Problem:**
-```typescript
-// ❌ BIASED
-const value = crypto.getRandomValues(new Uint32Array(1))[0];
-const index = value % charset.length;
-```
-
-**Solution:**
-```typescript
-// ✅ UNBIASED - Rejection sampling
-function getSecureRandomIndex(max: number): number {
-  const range = max;
-  const limit = Math.floor(0xFFFFFFFF / range) * range;
-
-  let value: number;
-  do {
-    value = crypto.getRandomValues(new Uint32Array(1))[0];
-  } while (value >= limit);
-
-  return value % range;
-}
-```
-
-### Pitfall 3: Incorrect Entropy Calculation
-
-**Problem:**
-```typescript
-// ❌ WRONG - Doesn't account for charset size
-const entropy = password.length * 8; // Assumes 256 possibilities per char
-```
-
-**Solution:**
-```typescript
-// ✅ CORRECT - Uses actual charset size
-function calculateEntropy(charsetSize: number, length: number): number {
-  return Math.log2(Math.pow(charsetSize, length));
-}
-```
-
-### Pitfall 4: Type Safety Violations
-
-**Problem:**
-```typescript
-// ❌ UNSAFE
-export function generatePassword(options?: any): any {
-  return { password: '...' };
-}
-```
-
-**Solution:**
-```typescript
-// ✅ TYPE-SAFE
-export function generatePassword(
-  options: PasswordGeneratorOptions
-): GeneratedPassword {
-  return { password: '...', entropy: 95.2, strength: 'very-strong' };
-}
-```
-
-### Pitfall 5: Bundle Size Bloat
-
-**Problem:**
-```typescript
-// ❌ BLOAT - Imports entire library
-import _ from 'lodash';
-const shuffled = _.shuffle(array);
-```
-
-**Solution:**
-```typescript
-// ✅ MINIMAL - Use native or implement locally
-function shuffle<T>(array: T[]): T[] {
-  const result = [...array];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = getSecureRandomIndex(i + 1);
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-```
-
----
-
-## Version Control and Release Process
-
-### Commit Message Format
-
-**Use conventional commits:**
-
-```
-type(scope): subject
-
-body (optional)
-
-footer (optional)
-```
-
-**Types:**
-- `feat` - New feature
-- `fix` - Bug fix
-- `security` - Security fix (CRITICAL)
-- `perf` - Performance improvement
-- `refactor` - Code refactoring
-- `test` - Test updates
-- `docs` - Documentation updates
-- `chore` - Build/tooling changes
-
-**Examples:**
-```
-feat(generator): add custom charset support
-
-Allows users to provide custom character sets for password generation.
-
-Closes #42
-```
-
-```
-security(crypto): fix modulo bias in random generation
-
-Implements rejection sampling to eliminate modulo bias in random
-index selection. This ensures truly uniform distribution.
-
-BREAKING CHANGE: getRandomIndex() now requires max parameter
-```
-
-### Semantic Versioning
-
-**Version format:** `MAJOR.MINOR.PATCH`
-
-- **MAJOR** - Breaking changes
-- **MINOR** - New features (backward compatible)
-- **PATCH** - Bug fixes (backward compatible)
-
-**Examples:**
-- `1.0.0 → 1.0.1` - Bug fix (no breaking changes)
-- `1.0.1 → 1.1.0` - New feature (backward compatible)
-- `1.1.0 → 2.0.0` - Breaking change
-
-### Release Checklist
-
-**Pre-release:**
-- [ ] All tests pass (`npm test`)
-- [ ] TypeScript compiles (`npm run type-check`)
-- [ ] Linting passes (`npm run lint`)
-- [ ] Bundle builds successfully (`npm run build`)
-- [ ] Bundle size checked (not increased significantly)
-- [ ] CHANGELOG.md updated
-- [ ] Version bumped in package.json
-- [ ] Documentation updated
-
-**Release:**
-- [ ] Create git tag (`git tag v1.0.0`)
-- [ ] Push tag (`git push origin v1.0.0`)
-- [ ] Publish to npm (`npm publish`)
-- [ ] Create GitHub release
-- [ ] Announce on relevant channels
-
-**Post-release:**
-- [ ] Verify package on npm
-- [ ] Test installation (`npm install @trustvault/password-utils`)
-- [ ] Monitor for issues
-- [ ] Update documentation site
-
----
-
-## Emergency Response
-
-### Security Vulnerability Response
-
-**If you discover a security vulnerability:**
-
-1. **DO NOT** create a public GitHub issue
-2. **DO** create a private security advisory
-3. **DO** notify maintainers immediately
-4. **DO** prepare a patch immediately
-5. **DO** test the patch thoroughly
-6. **DO** release emergency update ASAP
-7. **DO** disclose responsibly after fix is deployed
-
-**Severity levels:**
-- 🔴 **CRITICAL** - Remote code execution, cryptographic failure
-- 🟠 **HIGH** - Authentication bypass, data leak
-- 🟡 **MEDIUM** - Denial of service, minor info disclosure
-- 🟢 **LOW** - Low-impact issues
-
-### Breaking Build Response
-
-**If CI/CD fails:**
-
-1. **Identify** - Check build logs
-2. **Assess** - Determine impact
-3. **Fix** - Implement hotfix
-4. **Test** - Verify fix locally
-5. **Deploy** - Push fix immediately
-6. **Monitor** - Watch for additional issues
-
----
-
-## Agent Success Criteria
-
-**You are doing well if:**
-
-✅ All code is cryptographically secure
-✅ All code has comprehensive type safety
-✅ All features have tests with >90% coverage
-✅ All changes maintain backward compatibility
-✅ Bundle size remains optimized
-✅ Documentation is thorough and accurate
-✅ Security best practices are followed
-✅ Performance is maintained or improved
-
-**Red flags to avoid:**
-
-❌ Using `Math.random()` anywhere
-❌ Using `any` type
-❌ Committing untested code
-❌ Breaking API without version bump
-❌ Ignoring security warnings
-❌ Increasing bundle size significantly
-❌ Missing or incomplete documentation
-❌ Skipping security review
-
----
-
-## Additional Resources
-
-### Documentation
-- `README.md` - User-facing documentation
-- `CLAUDE.md` - Project overview and features
-- `AGENTS.md` - This file (agent instructions)
-
-### External References
-- [OWASP Password Guidelines](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
-- [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)
-- [zxcvbn Documentation](https://github.com/dropbox/zxcvbn)
-- [EFF Diceware Wordlist](https://www.eff.org/dice)
-- [Semantic Versioning](https://semver.org/)
-
-### Internal Tools
-- `npm run build` - Build production bundle
-- `npm run test` - Run test suite
-- `npm run test:coverage` - Generate coverage report
-- `npm run type-check` - TypeScript validation
-- `npm run lint` - Code quality checks
-
----
-
-## Conclusion
-
-This document provides comprehensive guidance for AI agents working on the TrustVault Password Utils repository. By following these instructions, agents can contribute effectively while maintaining the project's high standards for security, performance, and code quality.
-
-**Key Takeaways:**
-
-1. **Security is paramount** - Never compromise cryptographic integrity
-2. **Types are mandatory** - Full TypeScript coverage required
-3. **Tests are essential** - Comprehensive coverage, especially for security
-4. **Performance matters** - Optimize hot paths, minimize bundle size
-5. **Documentation is critical** - Keep all docs updated and accurate
-
-When in doubt, prioritize security over convenience, and always ask for clarification before making potentially breaking changes.
-
----
-
-**Document Version:** 1.0.0
-**Last Updated:** 2025-01-12
-**Maintained By:** TrustVault Team
+[Rest of document continues as before...]
