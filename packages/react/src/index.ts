@@ -1,31 +1,31 @@
 /**
- * password-tools-react
+ * password-suite-react
  *
  * React hooks for password generation and strength analysis
  *
  * @packageDocumentation
  */
 
-export { 
+export {
   usePasswordGenerator,
-  type UsePasswordGeneratorResult 
+  type UsePasswordGeneratorResult
 } from './usePasswordGenerator';
 
-export { 
+export {
   usePasswordStrength,
   type UsePasswordStrengthOptions,
-  type UsePasswordStrengthResult 
+  type UsePasswordStrengthResult
 } from './usePasswordStrength';
 
-export { 
+export {
   usePassphraseGenerator,
-  type UsePassphraseGeneratorResult 
+  type UsePassphraseGeneratorResult
 } from './usePassphraseGenerator';
 
-export { 
+export {
   useBreachCheck,
   type UseBreachCheckOptions,
-  type UseBreachCheckResult 
+  type UseBreachCheckResult
 } from './useBreachCheck';
 
 // Re-export types from core package for convenience
@@ -35,4 +35,4 @@ export type {
   PassphraseOptions,
   PasswordStrengthResult,
   BreachResult,
-} from 'password-tools';
+} from 'password-suite';

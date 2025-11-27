@@ -1,6 +1,6 @@
 {
-  "name": "password-tools",
-  "version": "2.0.0",
+  "name": "password-suite",
+  "version": "2.0.1",
   "description": "Cryptographically secure password and passphrase generation utilities with strength analysis",
   "type": "module",
   "private": false,
@@ -49,12 +49,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iAn-P1nt0/password-tools.git"
+    "url": "git+https://github.com/iAn-P1nt0/password-suite.git"
   },
   "bugs": {
-    "url": "https://github.com/iAn-P1nt0/password-tools/issues"
+    "url": "https://github.com/iAn-P1nt0/password-suite/issues"
   },
-  "homepage": "https://github.com/iAn-P1nt0/password-tools#readme",
+  "homepage": "https://github.com/iAn-P1nt0/password-suite#readme",
   "dependencies": {
     "@noble/hashes": "^1.5.0",
     "argon2-browser": "^1.18.0",

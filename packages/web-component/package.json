@@ -1,6 +1,6 @@
 {
-  "name": "password-tools-web-component",
-  "version": "1.0.0",
+  "name": "password-suite-web-component",
+  "version": "2.0.1",
   "description": "Web Component for password generation - framework agnostic",
   "type": "module",
   "main": "./dist/password-generator.cjs",
@@ -40,15 +40,15 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iAn-P1nt0/password-tools.git",
+    "url": "git+https://github.com/iAn-P1nt0/password-suite.git",
     "directory": "packages/web-component"
   },
   "bugs": {
-    "url": "https://github.com/iAn-P1nt0/password-tools/issues"
+    "url": "https://github.com/iAn-P1nt0/password-suite/issues"
   },
-  "homepage": "https://github.com/iAn-P1nt0/password-tools#readme",
+  "homepage": "https://github.com/iAn-P1nt0/password-suite#readme",
   "dependencies": {
-    "password-tools": "^2.0.0"
+    "password-suite": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

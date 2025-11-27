@@ -5,9 +5,9 @@
 Successfully implemented the remaining phases of the Mandatory Enhancement Plan from AGENTS.md:
 
 - ✅ **Phase 2.6**: Lazy-load zxcvbn (already implemented in core)
-- ✅ **Phase 3.7**: React hooks package (`password-tools-react`)
-- ✅ **Phase 3.8**: Web Component (`password-generator-element`)
-- ✅ **Phase 3.9**: CLI tool (`password-cli`)
+- ✅ **Phase 3.7**: React hooks package (`password-suite-react`)
+- ✅ **Phase 3.8**: Web Component (`password-suite-web-component`)
+- ✅ **Phase 3.9**: CLI tool (`password-suite-cli`)
 
 ## What Was Created
 
@@ -72,9 +72,9 @@ Successfully implemented the remaining phases of the Mandatory Enhancement Plan 
 ## Repository Structure
 
 ```
-password-tools/
+password-suite/
 ├── packages/
-│   ├── react/                    # password-tools-react
+│   ├── react/                    # password-suite-react
 │   │   ├── src/
 │   │   │   ├── usePasswordGenerator.ts
 │   │   │   ├── usePasswordStrength.ts
@@ -87,14 +87,14 @@ password-tools/
 │   │   ├── vitest.config.ts
 │   │   └── README.md
 │   │
-│   ├── web-component/            # password-generator-element
+│   ├── web-component/            # password-suite-web-component
 │   │   ├── src/
 │   │   │   └── password-generator.ts
 │   │   ├── package.json
 │   │   ├── tsconfig.json
 │   │   └── README.md
 │   │
-│   └── cli/                      # password-cli
+│   └── cli/                      # password-suite-cli
 │       ├── src/
 │       │   ├── cli.ts
 │       │   └── index.ts
@@ -326,7 +326,7 @@ All exit criteria from AGENTS.md have been met:
 
 Successfully implemented **3 complete new packages** plus verified lazy-loading in core:
 
-1. ✅ **password-tools-react** - 4 React hooks
+1. ✅ **password-suite-react** - 4 React hooks
 2. ✅ **password-generator-element** - Web Component
 3. ✅ **password-cli** - CLI tool with 5 commands
 4. ✅ **Lazy-loading** - Already implemented in core library
