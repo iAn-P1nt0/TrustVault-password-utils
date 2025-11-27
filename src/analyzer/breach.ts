@@ -10,7 +10,6 @@
  * @module breach
  */
 
-/* eslint-disable no-console */
 import { sha1 } from '@noble/hashes/sha1';
 import { bytesToHex } from '@noble/hashes/utils';
 

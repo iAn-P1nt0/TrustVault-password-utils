@@ -119,7 +119,7 @@ function calculatePasswordEntropy(password: string): number {
   if (/[^a-zA-Z0-9]/.test(password)) charsetSize += 32;  // Symbols
 
   // Check for Unicode characters (rough estimate)
-  const hasUnicode = /[^\x00-\x7F]/.test(password);
+  const hasUnicode = /[^\x20-\x7E\s]/.test(password);
   if (hasUnicode) {
     // Assume average Unicode charset of ~1000 characters
     charsetSize += 1000;
